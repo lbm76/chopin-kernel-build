@@ -63,8 +63,9 @@ jobs:
           make --version
           nproc
 
-      # 4. Download GCC 4.9
+      # 4. Download GCC 4.9 (with auto-detection of actual binary paths)
       - name: Download GCC 4.9
+        id: download_gcc
         run: |
           mkdir -p ${GITHUB_WORKSPACE}/kernel_workspace
           cd ${GITHUB_WORKSPACE}/kernel_workspace
@@ -76,6 +77,22 @@ jobs:
           mkdir gcc32
           wget -O gcc-arm.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
           tar -C gcc32/ -zxvf gcc-arm.tar.gz
+          
+          # Auto-detect actual gcc binary paths
+          GCC64_BIN=$(find gcc64 -name "aarch64-linux-android-gcc" -type f | head -1)
+          GCC32_BIN=$(find gcc32 -name "arm-linux-androideabi-gcc" -type f | head -1)
+          
+          if [ -z "$GCC64_BIN" ] || [ -z "$GCC32_BIN" ]; then
+            echo "❌ GCC binary not found! Listing extracted structure:"
+            find gcc64 -type f | head -20
+            find gcc32 -type f | head -20
+            exit 1
+          fi
+          
+          echo "GCC64_BIN=$GCC64_BIN" >> $GITHUB_OUTPUT
+          echo "GCC32_BIN=$GCC32_BIN" >> $GITHUB_OUTPUT
+          echo "Found GCC64: $GCC64_BIN"
+          echo "Found GCC32: $GCC32_BIN"
 
       # 5. Download Clang
       - name: Download Clang
@@ -95,7 +112,7 @@ jobs:
       - name: Configure & Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         env:
-          PATH: ${GITHUB_WORKSPACE}/kernel_workspace/clang-aosp/bin:${GITHUB_WORKSPACE}/kernel_workspace/gcc64/bin:${GITHUB_WORKSPACE}/kernel_workspace/gcc32/bin:${PATH}
+          PATH: ${GITHUB_WORKSPACE}/kernel_workspace/clang-aosp/bin:${PATH}
           KBUILD_BUILD_HOST: ${{ env.KBUILD_BUILD_HOST }}
           KBUILD_BUILD_USER: ${{ env.KBUILD_BUILD_USER }}
           KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
@@ -103,11 +120,12 @@ jobs:
           set -euo pipefail
           export PATH="${PATH}"
           
-          # Verify toolchain - use absolute clang path for CC
+          # Verify toolchain - use absolute paths
           CLANG_BIN="${GITHUB_WORKSPACE}/kernel_workspace/clang-aosp/bin/clang"
-          GCC64_BIN="${GITHUB_WORKSPACE}/kernel_workspace/gcc64/bin/aarch64-linux-android-gcc"
+          GCC64_BIN="${{ steps.download_gcc.outputs.GCC64_BIN }}"
+          GCC32_BIN="${{ steps.download_gcc.outputs.GCC32_BIN }}"
           
-          command -v "${CLANG_BIN}" "${GCC64_BIN}" make nproc
+          command -v "${CLANG_BIN}" "${GCC64_BIN}" "${GCC32_BIN}" make nproc
           "${CLANG_BIN}" --version
           "${GCC64_BIN}" --version
           
@@ -148,11 +166,11 @@ jobs:
           echo "=== Key config verification ==="
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULE_SIG" out/.config || true
           
-          # Build kernel - use absolute clang path
+          # Build kernel - use absolute clang path and gcc paths
           make -j$(nproc --all) CC="${CLANG_BIN}" O=out ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE="${GITHUB_WORKSPACE}/kernel_workspace/gcc64/bin/aarch64-linux-android-" \
-            CROSS_COMPILE_ARM32="${GITHUB_WORKSPACE}/kernel_workspace/gcc32/bin/arm-linux-androideabi-" \
+            CROSS_COMPILE="$(dirname "${GCC64_BIN}")/aarch64-linux-android-" \
+            CROSS_COMPILE_ARM32="$(dirname "${GCC32_BIN}")/arm-linux-androideabi-" \
             LD=ld.lld \
             2>&1 | tee build.log
           
@@ -179,7 +197,7 @@ jobs:
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
         env:
-          PATH: ${GITHUB_WORKSPACE}/kernel_workspace/clang-aosp/bin:${GITHUB_WORKSPACE}/kernel_workspace/gcc64/bin:${GITHUB_WORKSPACE}/kernel_workspace/gcc32/bin:${PATH}
+          PATH: ${GITHUB_WORKSPACE}/kernel_workspace/clang-aosp/bin:${PATH}
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
