@@ -50,19 +50,31 @@ jobs:
           repository: lbm76/chopin-kernel-build
           ref: main
           path: build-repo
-          sparse-checkout: patches
+          sparse-checkout: |
+            patches
+            patches/**
           sparse-checkout-cone-mode: false
 
       # ═══════════════════════════════════
-      # 3️⃣ 应用 MT6891 OC/UV 补丁
+      # 3️⃣ 应用 MT6891 OC/UV 补丁（含调试输出）
       # ═══════════════════════════════════
       - name: Apply MT6891 OC/UV patches
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           set -euo pipefail
           PATCH_DIR="../build-repo/patches"
+          
+          # 👇 调试：打印目录树，Actions 日志里能看到真实结构
+          echo "=== DEBUG: Workspace root ==="
+          ls -la ../../
+          echo "=== DEBUG: build-repo ==="
+          ls -la ../../build-repo/
+          echo "=== DEBUG: patches dir ==="
+          ls -la ../../build-repo/patches/ 2>/dev/null || echo "patches 目录不存在"
+          
           if [ -d "$PATCH_DIR" ]; then
             for patch in "$PATCH_DIR"/*.patch; do
+              [ -f "$patch" ] || continue
               echo "Applying $patch"
               git apply --verbose "$patch" 2>&1 | tee -a patch.log || {
                 echo "⚠️ git apply 失败，尝试 patch -p1"
@@ -70,7 +82,7 @@ jobs:
               }
             done
           else
-            echo "❌ patches 目录不存在于 build-repo/patches"
+            echo "❌ patches 目录不存在于 $PATCH_DIR"
             exit 1
           fi
 
