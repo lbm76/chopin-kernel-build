@@ -47,11 +47,22 @@ jobs:
           echo "ksu_version=${{ env.KSU_VERSION }}" >> $GITHUB_OUTPUT
           echo "✅ KernelSU patched"
 
-      # 3️⃣ 安装编译依赖（照搬你的列表）
+      # 3️⃣ 安装编译依赖（强制装 build-essential/coreutils，提供 make/nproc）
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo -E apt-get -y -qq install git make bc bison ccache openssl dos2unix zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            coreutils \
+            git make bc bison ccache openssl dos2unix zip kmod cpio flex libelf-dev \
+            curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates \
+            python3 python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            libncurses5-dev libssl-dev libelf-dev lz4 lzop zstd
+          
+          # 验证关键命令存在
+          which make nproc gcc clang
+          make --version
+          nproc
 
       # 4️⃣ 下载 GCC 4.9（完全照搬你的：android-12.1.0_r27 tag）
       - name: Download GCC 4.9
@@ -91,6 +102,11 @@ jobs:
           KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
         run: |
           export PATH="${PATH}"
+          
+          # 验证工具链
+          which clang aarch64-linux-android-gcc make nproc
+          clang --version
+          aarch64-linux-android-gcc --version
           
           make -s -j$(nproc --all) O=out ARCH=arm64 ${DEFCONFIG}_defconfig
           
