@@ -39,7 +39,7 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # 2️⃣ KernelSU 打补丁
+      # 2️⃣ KernelSU 打补丁（修复路径：--kernel-dir=".."）
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
@@ -54,8 +54,10 @@ jobs:
           KSU_VER=$(cd "$KSU_DIR" && git describe --tags --always --dirty 2>/dev/null || echo "unknown")
           echo "KernelSU version: $KSU_VER"
           echo "ksu_version=$KSU_VER" >> $GITHUB_OUTPUT
+          
           cd "$KSU_DIR"
-          python3 kernel/setup.py --kernel-dir="../${{ env.KERNEL_DIR }}" --auto 2>&1 | tee ksu_patch.log
+          ls -la kernel/setup.py   # 确认文件存在
+          python3 kernel/setup.py --kernel-dir=".." --auto 2>&1 | tee ksu_patch.log
 
       # 3️⃣ 安装编译依赖
       - name: Install dependencies
