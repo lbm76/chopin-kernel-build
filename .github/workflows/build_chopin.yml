@@ -1,4 +1,4 @@
-name: Build Chopin (MT6891) Kernel with KernelSU + susfs
+name: Build Chopin (MT6891) Kernel with KernelSU
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ env:
   DEFCONFIG: chopin_user
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
   KSU_VERSION: v0.9.5
-  SUFS_VERSION: v0.9.5
   CCACHE_DIR: /tmp/ccache
   KBUILD_BUILD_USER: "@Xinran_StarBai"
   KBUILD_BUILD_HOST: "Xinran"
@@ -48,70 +47,7 @@ jobs:
           echo "ksu_version=${{ env.KSU_VERSION }}" >> $GITHUB_OUTPUT
           echo "✅ KernelSU patched"
 
-      # 3️⃣ 应用 susfs4ksu 补丁（多重兜底下载，彻底解决 gzip 报错）
-      - name: Apply susfs4ksu patches
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          set -euo pipefail
-          echo "Fetching susfs4ksu patches (${{ env.SUFS_VERSION }}) ..."
-          
-          SUFS_TMP=$(mktemp -d)
-          cd "$SUFS_TMP"
-          
-          # 尝试 1：通过 GitHub API 获取 Release 资产下载链接
-          ASSET_URL=$(curl -sL "https://api.github.com/repos/sidex15/susfs4ksu/releases/tags/${{ env.SUFS_VERSION }}" \
-            | grep -E '"browser_download_url":\s*"[^"]*\.tar\.gz"' \
-            | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          
-          if [ -n "$ASSET_URL" ]; then
-            echo "Downloading from Release asset: $ASSET_URL"
-            curl -LSs "$ASSET_URL" | tar -xz
-          else
-            # 尝试 2：直接下载源码归档（tag 名可能不带 v）
-            TAG_NO_V="${{ env.SUFS_VERSION }}"; TAG_NO_V="${TAG_NO_V#v}"
-            ARCHIVE_URL="https://github.com/sidex15/susfs4ksu/archive/refs/tags/${{ env.SUFS_VERSION }}.tar.gz"
-            echo "Trying archive URL: $ARCHIVE_URL"
-            if curl -LSsf "$ARCHIVE_URL" | tar -xz; then
-              echo "Downloaded via archive URL"
-            else
-              # 尝试 3：main 分支源码
-              echo "Falling back to main branch..."
-              curl -LSs "https://github.com/sidex15/susfs4ksu/archive/refs/heads/main.tar.gz" | tar -xz
-            fi
-          fi
-          
-          # 找补丁目录（兼容多种目录名）
-          if [ -d "susfs4ksu-${{ env.SUFS_VERSION }}/kernel_patches" ]; then
-            PATCH_DIR="susfs4ksu-${{ env.SUFS_VERSION }}/kernel_patches"
-          elif [ -d "susfs4ksu-${TAG_NO_V}/kernel_patches" ]; then
-            PATCH_DIR="susfs4ksu-${TAG_NO_V}/kernel_patches"
-          elif [ -d "susfs4ksu-main/kernel_patches" ]; then
-            PATCH_DIR="susfs4ksu-main/kernel_patches"
-          elif [ -d "susfs4ksu-${{ env.SUFS_VERSION }}/patches" ]; then
-            PATCH_DIR="susfs4ksu-${{ env.SUFS_VERSION }}/patches"
-          elif [ -d "susfs4ksu-${TAG_NO_V}/patches" ]; then
-            PATCH_DIR="susfs4ksu-${TAG_NO_V}/patches"
-          elif [ -d "susfs4ksu-main/patches" ]; then
-            PATCH_DIR="susfs4ksu-main/patches"
-          else
-            echo "❌ 找不到补丁目录，列出所有文件："
-            find . -name "*.patch" -type f
-            exit 1
-          fi
-          
-          echo "Applying patches from $PATCH_DIR ..."
-          for patch in "$PATCH_DIR"/*.patch; do
-            [ -f "$patch" ] || continue
-            echo "Applying $(basename "$patch")"
-            git apply --verbose "$patch" 2>&1 | tee -a ../susfs_patch.log || {
-              echo "⚠️ git apply 失败，尝试 patch -p1"
-              patch -p1 < "$patch" 2>&1 | tee -a ../susfs_patch.log
-            }
-          done
-          
-          echo "✅ susfs4ksu patches applied"
-
-      # 4️⃣ 安装编译依赖（强制装 build-essential/coreutils，用 command -v 验证）
+      # 3️⃣ 安装编译依赖（强制装 build-essential/coreutils，用 command -v 验证）
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -127,7 +63,7 @@ jobs:
           make --version
           nproc
 
-      # 5️⃣ 下载 GCC 4.9（完全照搬你的：android-12.1.0_r27 tag）
+      # 4️⃣ 下载 GCC 4.9（完全照搬你的：android-12.1.0_r27 tag）
       - name: Download GCC 4.9
         run: |
           mkdir -p ${GITHUB_WORKSPACE}/kernel_workspace
@@ -141,22 +77,22 @@ jobs:
           wget -O gcc-arm.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
           tar -C gcc32/ -zxvf gcc-arm.tar.gz
 
-      # 6️⃣ 下载 Clang（完全照搬你的：crdroidandroid clang-6443078 10.0 分支）
+      # 5️⃣ 下载 Clang（完全照搬你的：crdroidandroid clang-6443078 10.0 分支）
       - name: Download Clang
         run: |
           cd ${GITHUB_WORKSPACE}/kernel_workspace
           mkdir clang-aosp
           git clone -q --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6443078 -b 10.0 clang-aosp
 
-      # 7️⃣ ccache 缓存（照搬你的）
+      # 6️⃣ ccache 缓存（照搬你的）
       - name: Cache ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: build-kernel-chopin-ksu-sufs
+          key: build-kernel-chopin-ksu
           max-size: 5G
 
       # ═══════════════════════════════════
-      # 8️⃣ 配置并构建内核 —— **完全照搬你给的能跑通工作流**
+      # 7️⃣ 配置并构建内核 —— **完全照搬你给的能跑通工作流**
       # ═══════════════════════════════════
       - name: Configure & Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
@@ -176,7 +112,7 @@ jobs:
           # 生成 .config（完全照搬你的）
           make -s -j$(nproc --all) O=out ARCH=arm64 ${DEFCONFIG}_defconfig
           
-          # KernelSU + susfs 必需配置
+          # KernelSU 必需配置
           scripts/config --enable KSU
           scripts/config --enable KSU_DAEMON
           scripts/config --enable KPROBES
@@ -188,18 +124,10 @@ jobs:
           scripts/config --disable DEBUG_KERNEL
           scripts/config --disable KALLSYMS
           
-          # susfs 专用配置
-          scripts/config --enable KSU_SUSFS 2>/dev/null || true
-          scripts/config --enable KSU_SUSFS_SUS_MOUNT 2>/dev/null || true
-          scripts/config --enable KSU_SUSFS_SUS_UMOUNT 2>/dev/null || true
-          scripts/config --enable KSU_SUSFS_SUS_STAT 2>/dev/null || true
-          scripts/config --enable KSU_SUSFS_SUS_OPENAT 2>/dev/null || true
-          scripts/config --enable KSU_SUSFS_SUS_GETDENTS 2>/dev/null || true
-          
           make -s -j$(nproc --all) O=out ARCH=arm64 olddefconfig
           
           echo "=== 关键配置校验 ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULE_SIG|CONFIG_KSU_SUSFS" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULE_SIG" out/.config || true
           
           # 编译内核（完全照搬你的 make 参数）
           make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 \
@@ -227,7 +155,7 @@ jobs:
           echo "✅ Kernel Image built successfully"
 
       # ═══════════════════════════════════
-      # 9️⃣ 编译 DTB —— **完全照搬你给的能跑通工作流**
+      # 8️⃣ 编译 DTB —— **完全照搬你给的能跑通工作流**
       # ═══════════════════════════════════
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
@@ -236,7 +164,7 @@ jobs:
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
-      # 1️⃣0️⃣ 打包镜像
+      # 9️⃣ 打包镜像
       - name: Package kernel images
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -273,7 +201,7 @@ jobs:
             echo "✅ KSU module copied to artifacts"
           fi
 
-      # 1️⃣1️⃣ AnyKernel3 ZIP（照搬你的打包方式）
+      # 1️⃣0️⃣ AnyKernel3 ZIP（照搬你的打包方式）
       - name: Package AnyKernel3
         if: github.event.inputs.build_type == 'release'
         run: |
@@ -282,9 +210,9 @@ jobs:
           cp ${GITHUB_WORKSPACE}/${{ env.KERNEL_DIR }}/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
           cd AnyKernel3
-          zip -r ../artifact/ShirokoNeko-kernel-FolkPatch-KSU-susfs.zip .
+          zip -r ../artifact/ShirokoNeko-kernel-FolkPatch-KSU.zip .
 
-      # 1️⃣2️⃣ Magisk 模块
+      # 1️⃣1️⃣ Magisk 模块
       - name: Package Magisk Module
         if: github.event.inputs.build_type == 'release'
         run: |
@@ -298,12 +226,12 @@ jobs:
           fi
           
           cat > magisk_module/module.prop << MAGEOF
-          id=xinran_ksu_susfs_kernel_chopin
-          name=Xinran Kernel + KSU + susfs (Chopin MT6891)
+          id=xinran_ksu_kernel_chopin
+          name=Xinran Kernel + KSU (Chopin MT6891)
           version=$(date +%Y%m%d)
           versionCode=$(date +%s)
-          author=lbm76/Xinran + tiann/KernelSU + sidex15/susfs4ksu
-          description=Dimensity 1100 kernel with KernelSU + susfs (stock frequencies/voltages)
+          author=lbm76/Xinran + tiann/KernelSU
+          description=Dimensity 1100 kernel with KernelSU (stock frequencies/voltages)
           minMagisk=23000
           MAGEOF
           
@@ -315,7 +243,7 @@ jobs:
           LATESTARTSERVICE=false
           
           on_install() {
-            ui_print "- Installing Xinran Kernel + KSU + susfs for Chopin..."
+            ui_print "- Installing Xinran Kernel + KSU for Chopin..."
             ui_print "- Flashing boot image..."
             if [ -f \$MODPATH/modules/ksu.ko ]; then
               ui_print "- Installing KernelSU module..."
@@ -325,28 +253,27 @@ jobs:
           SHOEF
           
           cd magisk_module
-          zip -r9 ../artifact/Magisk-Xinran-KSU-susfs-Chopin-$(date +%Y%m%d).zip .
+          zip -r9 ../artifact/Magisk-Xinran-KSU-Chopin-$(date +%Y%m%d).zip .
           echo "✅ Magisk module ZIP created"
 
-      # 1️⃣3️⃣ 上传产物
+      # 1️⃣2️⃣ 上传产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: xinran-ksu-susfs-chopin-${{ env.BUILD_TYPE }}-${{ github.run_number }}
+          name: xinran-ksu-chopin-${{ env.BUILD_TYPE }}-${{ github.run_number }}
           path: |
             artifact/
             ${{ env.KERNEL_DIR }}/build.log
             ${{ env.KERNEL_DIR }}/ksu_patch.log
-            ${{ env.KERNEL_DIR }}/susfs_patch.log
           retention-days: 30
 
-      # 1️⃣4️⃣ 创建 Release（照搬你的命名风格）
+      # 1️⃣3️⃣ 创建 Release（照搬你的命名风格）
       - name: Create Release
         if: github.event.inputs.build_type == 'release' && github.repository_owner == github.actor
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v$(date +'%Y.%m.%d')-${{ github.run_number }}
-          name: "Xinran+KSU+susfs Chopin (MT6891) $(date +'%Y.%m.%d')"
+          name: "Xinran+KSU Chopin (MT6891) $(date +'%Y.%m.%d')"
           body: |
             **Redmi Note 10 Pro (chopin) - Dimensity 1100 (MT6891)**
             
@@ -354,16 +281,14 @@ jobs:
             - Ubuntu 22.04 + crDroid Clang-6443078 (10.0) + GCC 4.9 (android-12.1.0_r27)
             - Kernel: `lbm76/xinran_xiaomi_kernel_chopin@xinran` (4.14)
             - KernelSU: `tiann/KernelSU@v0.9.5`
-            - susfs4ksu: `sidex15/susfs4ksu@v0.9.5`
             
             **Features**
             - KernelSU support (module or built-in)
-            - susfs4ksu (hide root, pass Play Integrity)
             - Stock frequencies & voltages (no OC/UV)
             
             **Artifacts**
-            - `ShirokoNeko-kernel-FolkPatch-KSU-susfs.zip` → **Recovery 刷入**
-            - `Magisk-Xinran-KSU-susfs-Chopin-*.zip` → Magisk 模块
+            - `ShirokoNeko-kernel-FolkPatch-KSU.zip` → **Recovery 刷入**
+            - `Magisk-Xinran-KSU-Chopin-*.zip` → Magisk 模块
             - `ksu.ko` + `config_final` + `build.log`
           files: artifact/*
           draft: false
