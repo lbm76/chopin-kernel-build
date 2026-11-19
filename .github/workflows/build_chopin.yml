@@ -17,7 +17,7 @@ env:
   KERNEL_DIR: kernel/xiaomi/chopin
   DEFCONFIG: chopin_user
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
-  CLANG_VERSION: r450784d
+  CLANG_VERSION: r450784d          # Clang 13.0.1
   GCC_VERSION: aarch64-linux-android-4.9
   KSU_BRANCH: ${{ github.event.inputs.ksu_branch }}
   CCACHE_DIR: /tmp/ccache
@@ -30,6 +30,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
+      # ═══════════════════════════════════
+      # 1️⃣ Checkout 内核源码
+      # ═══════════════════════════════════
       - name: Checkout kernel source (xinran branch)
         uses: actions/checkout@v4
         with:
@@ -38,44 +41,92 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      - name: Checkout patches repo (lbm76/chopin-kernel-build)
-        uses: actions/checkout@v4
-        with:
-          repository: lbm76/chopin-kernel-build
-          ref: main
-          path: build-repo
-          sparse-checkout: |
-            patches
-            patches/**
-          sparse-checkout-cone-mode: false
-
-      - name: Apply MT6891 OC/UV patches
+      # ═══════════════════════════════════
+      # 2️⃣ 自动定位 OPP 文件 → 生成补丁 → 应用（全内存完成，零文件落地）
+      # ═══════════════════════════════════
+      - name: Generate & Apply OC/UV patches on the fly
+        id: ocuv
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           set -euo pipefail
-          PATCH_DIR="../../../build-repo/patches"
           
-          echo "=== DEBUG: Workspace root ==="
-          ls -la ../../../
-          echo "=== DEBUG: build-repo ==="
-          ls -la ../../../build-repo/
-          echo "=== DEBUG: patches dir ==="
-          ls -la ../../../build-repo/patches/ 2>/dev/null || echo "patches 目录不存在"
+          echo "=== Searching for CPU OPP table file ==="
+          CPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "mt6891_cpu_opp_data" 2>/dev/null | head -1)
+          if [ -z "$CPU_FILE" ]; then
+            CPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "opp_data" 2>/dev/null | grep -iE "mt6891|mtk.*cpu.*opp" | head -1)
+          fi
+          if [ -z "$CPU_FILE" ]; then
+            echo "❌ 未找到 CPU OPP 文件"; exit 1
+          fi
+          echo "Found CPU: $CPU_FILE"
           
-          if [ -d "$PATCH_DIR" ]; then
-            for patch in "$PATCH_DIR"/*.patch; do
-              [ -f "$patch" ] || continue
-              echo "Applying $patch"
-              git apply --verbose "$patch" 2>&1 | tee -a patch.log || {
-                echo "⚠️ git apply 失败，尝试 patch -p1"
-                patch -p1 < "$patch" 2>&1 | tee -a patch.log
-              }
-            done
-          else
-            echo "❌ patches 目录不存在于 $PATCH_DIR"
+          echo "=== Searching for GPU OPP table file ==="
+          GPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "mt6891_gpu_opp_table" 2>/dev/null | head -1)
+          if [ -z "$GPU_FILE" ]; then
+            GPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "gpu_opp_info" 2>/dev/null | grep -iE "mt6891|mtk.*gpu.*opp" | head -1)
+          fi
+          if [ -z "$GPU_FILE" ]; then
+            echo "❌ 未找到 GPU OPP 文件"; exit 1
+          fi
+          echo "Found GPU: $GPU_FILE"
+          
+          # 备份原文件
+          cp "$CPU_FILE" "${CPU_FILE}.orig"
+          cp "$GPU_FILE" "${GPU_FILE}.orig"
+          
+          # ════════════════════════════════
+          # 修改 CPU OPP 表：全频段 -75mV + 追加 2.8G/2.9G
+          # ════════════════════════════════
+          sed -i 's/{ 300000000,  750000 }/{ 300000000,  675000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 600000000,  750000 }/{ 600000000,  675000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 800000000,  775000 }/{ 800000000,  700000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 1000000000, 800000 }/{ 1000000000, 725000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 1200000000, 825000 }/{ 1200000000, 750000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 1400000000, 850000 }/{ 1400000000, 775000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 1600000000, 875000 }/{ 1600000000, 800000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 1800000000, 900000 }/{ 1800000000, 825000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 2000000000, 950000 }/{ 2000000000, 875000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 2200000000, 1000000 }/{ 2200000000, 925000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 2400000000, 1050000 }/{ 2400000000, 975000 }/' "${CPU_FILE}.orig"
+          sed -i 's/{ 2600000000, 1100000 }/{ 2600000000, 1025000 }/' "${CPU_FILE}.orig"
+          # 追加 2.8G / 2.9G（在最后一行前插入）
+          sed -i '/{ 2600000000, 1100000 }/a\       { 2800000000, 1075000 },\n       { 2900000000, 1100000 },' "${CPU_FILE}.orig"
+          
+          # ════════════════════════════════
+          # 修改 GPU OPP 表：降压 + 追加 800M/850M
+          # ════════════════════════════════
+          sed -i 's/{ 300000000,  600000 }/{ 300000000,  550000 }/' "${GPU_FILE}.orig"
+          sed -i 's/{ 400000000,  625000 }/{ 400000000,  575000 }/' "${GPU_FILE}.orig"
+          sed -i 's/{ 500000000,  650000 }/{ 500000000,  600000 }/' "${GPU_FILE}.orig"
+          sed -i 's/{ 600000000,  675000 }/{ 600000000,  625000 }/' "${GPU_FILE}.orig"
+          sed -i 's/{ 700000000,  700000 }/{ 700000000,  650000 }/' "${GPU_FILE}.orig"
+          sed -i '/{ 700000000,  700000 }/a\       { 800000000,  675000 },\n       { 850000000,  700000 },' "${GPU_FILE}.orig"
+          
+          # ════════════════════════════════
+          # 生成并应用标准 unified diff
+          # ════════════════════════════════
+          diff -u "$CPU_FILE" "${CPU_FILE}.orig" > cpu.patch || true
+          diff -u "$GPU_FILE" "${GPU_FILE}.orig" > gpu.patch || true
+          
+          if [ ! -s cpu.patch ] || [ ! -s gpu.patch ]; then
+            echo "❌ 补丁生成失败（可能原文件格式不匹配）"
+            echo "=== CPU patch ==="; cat cpu.patch
+            echo "=== GPU patch ==="; cat gpu.patch
             exit 1
           fi
+          
+          for p in cpu.patch gpu.patch; do
+            echo "Applying $p"
+            git apply --verbose "$p" 2>&1 | tee -a patch.log || {
+              echo "⚠️ git apply 失败，尝试 patch -p1"
+              patch -p1 < "$p" 2>&1 | tee -a patch.log
+            }
+          done
+          echo "✅ OC/UV patches applied"
 
+      # ═══════════════════════════════════
+      # 3️⃣ KernelSU 打补丁
+      # ═══════════════════════════════════
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
@@ -93,6 +144,9 @@ jobs:
           cd "$KSU_DIR"
           python3 kernel/setup.py --kernel-dir="../${{ env.KERNEL_DIR }}" --auto 2>&1 | tee ksu_patch.log
 
+      # ═══════════════════════════════════
+      # 4️⃣ 安装编译依赖
+      # ═══════════════════════════════════
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -104,6 +158,9 @@ jobs:
             git wget curl unzip xz-utils \
             libtinfo5 libstdc++6 libxml2-utils
 
+      # ═══════════════════════════════════
+      # 5️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
+      # ═══════════════════════════════════
       - name: Download & Cache Toolchains (Clang 13 + GCC 4.9)
         id: toolchain
         run: |
@@ -142,6 +199,9 @@ jobs:
           echo "GCC_DIR=$GCC_DIR" >> $GITHUB_OUTPUT
           echo "PATH=$CLANG_DIR/bin:$GCC_DIR/bin" >> $GITHUB_OUTPUT
 
+      # ═══════════════════════════════════
+      # 6️⃣ ccache 缓存
+      # ═══════════════════════════════════
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -158,6 +218,9 @@ jobs:
           export CCACHE_MAXSIZE=2G
           ccache -z
 
+      # ═══════════════════════════════════
+      # 7️⃣ 生成内核配置
+      # ═══════════════════════════════════
       - name: Prepare kernel config
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -199,6 +262,9 @@ jobs:
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MTK_CPUFREQ|CONFIG_MTK_DVFSRC|CONFIG_MODULE_SIG" out/.config || true
           cp out/.config ../artifact_config.txt 2>/dev/null || true
 
+      # ═══════════════════════════════════
+      # 8️⃣ 编译内核
+      # ═══════════════════════════════════
       - name: Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -247,6 +313,9 @@ jobs:
           
           echo "✅ Kernel Image built successfully"
 
+      # ═══════════════════════════════════
+      # 9️⃣ 编译 DTB
+      # ═══════════════════════════════════
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -254,6 +323,9 @@ jobs:
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
+      # ═══════════════════════════════════
+      # 1️⃣1️⃣ 打包镜像
+      # ═══════════════════════════════════
       - name: Package kernel images
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -290,6 +362,9 @@ jobs:
             echo "✅ KSU module copied to artifacts"
           fi
 
+      # ═══════════════════════════════════
+      # 1️⃣2️⃣ AnyKernel3 ZIP
+      # ═══════════════════════════════════
       - name: Package AnyKernel3
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -323,6 +398,9 @@ jobs:
           zip -r9 ../artifact/AnyKernel3-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d-%H%M).zip * -x .git README.md *placeholder
           echo "✅ AnyKernel3 ZIP created"
 
+      # ═══════════════════════════════════
+      # 1️⃣3️⃣ Magisk 模块
+      # ═══════════════════════════════════
       - name: Package Magisk Module
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -367,6 +445,9 @@ jobs:
           zip -r9 ../artifact/Magisk-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d).zip .
           echo "✅ Magisk module ZIP created"
 
+      # ═══════════════════════════════════
+      # 1️⃣4️⃣ 上传产物
+      # ═══════════════════════════════════
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -378,6 +459,9 @@ jobs:
             ${{ env.KERNEL_DIR }}/patch.log
           retention-days: 30
 
+      # ═══════════════════════════════════
+      # 1️⃣5️⃣ 自动发布到 Releases
+      # ═══════════════════════════════════
       - name: Create Release
         if: github.event.inputs.build_type == 'release' && github.repository_owner == github.actor
         uses: softprops/action-gh-release@v1
@@ -392,7 +476,7 @@ jobs:
             - Kernel: `lbm76/xinran_xiaomi_kernel_chopin@xinran` (4.14)
             - KernelSU: `tiann/KernelSU@${{ steps.ksu.outputs.ksu_version || 'latest' }}`
             
-            **OC/UV Applied (via patches/)**
+            **OC/UV Applied (auto-generated at build time)**
             - **CPU**: 2.6GHz → **2.9 GHz**, 全频段 **-75mV**
             - **GPU**: 700MHz → **850 MHz**, 降压
             - **Configs**: `CONFIG_MTK_CPUFREQ=y`, `CONFIG_MTK_DVFSRC=y`
