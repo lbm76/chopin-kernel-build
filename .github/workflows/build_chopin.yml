@@ -17,7 +17,7 @@ env:
   KERNEL_DIR: kernel/xiaomi/chopin
   DEFCONFIG: chopin_user
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
-  CLANG_VERSION: r450784d          # Clang 13.0.1
+  CLANG_VERSION: r450784d
   GCC_VERSION: aarch64-linux-android-4.9
   KSU_BRANCH: ${{ github.event.inputs.ksu_branch }}
   CCACHE_DIR: /tmp/ccache
@@ -30,9 +30,6 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
-      # ═══════════════════════════════════
-      # 1️⃣ Checkout 内核源码
-      # ═══════════════════════════════════
       - name: Checkout kernel source (xinran branch)
         uses: actions/checkout@v4
         with:
@@ -41,9 +38,6 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # ═══════════════════════════════════
-      # 2️⃣ Checkout 补丁仓库 (lbm76/chopin-kernel-build) — 只拉 patches/
-      # ═══════════════════════════════════
       - name: Checkout patches repo (lbm76/chopin-kernel-build)
         uses: actions/checkout@v4
         with:
@@ -55,22 +49,18 @@ jobs:
             patches/**
           sparse-checkout-cone-mode: false
 
-      # ═══════════════════════════════════
-      # 3️⃣ 应用 MT6891 OC/UV 补丁（含调试输出）
-      # ═══════════════════════════════════
       - name: Apply MT6891 OC/UV patches
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           set -euo pipefail
-          PATCH_DIR="../build-repo/patches"
+          PATCH_DIR="../../../build-repo/patches"
           
-          # 👇 调试：打印目录树，Actions 日志里能看到真实结构
           echo "=== DEBUG: Workspace root ==="
-          ls -la ../../
+          ls -la ../../../
           echo "=== DEBUG: build-repo ==="
-          ls -la ../../build-repo/
+          ls -la ../../../build-repo/
           echo "=== DEBUG: patches dir ==="
-          ls -la ../../build-repo/patches/ 2>/dev/null || echo "patches 目录不存在"
+          ls -la ../../../build-repo/patches/ 2>/dev/null || echo "patches 目录不存在"
           
           if [ -d "$PATCH_DIR" ]; then
             for patch in "$PATCH_DIR"/*.patch; do
@@ -86,9 +76,6 @@ jobs:
             exit 1
           fi
 
-      # ═══════════════════════════════════
-      # 4️⃣ KernelSU 打补丁
-      # ═══════════════════════════════════
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
@@ -106,9 +93,6 @@ jobs:
           cd "$KSU_DIR"
           python3 kernel/setup.py --kernel-dir="../${{ env.KERNEL_DIR }}" --auto 2>&1 | tee ksu_patch.log
 
-      # ═══════════════════════════════════
-      # 5️⃣ 安装编译依赖
-      # ═══════════════════════════════════
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -120,9 +104,6 @@ jobs:
             git wget curl unzip xz-utils \
             libtinfo5 libstdc++6 libxml2-utils
 
-      # ═══════════════════════════════════
-      # 6️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
-      # ═══════════════════════════════════
       - name: Download & Cache Toolchains (Clang 13 + GCC 4.9)
         id: toolchain
         run: |
@@ -130,7 +111,6 @@ jobs:
           CLANG_DIR="/opt/clang-${{ env.CLANG_VERSION }}"
           GCC_DIR="/opt/gcc-${{ env.GCC_VERSION }}"
           
-          # ── Clang r450784d (13.0.1) ──
           if [ ! -d "$CLANG_DIR" ]; then
             echo "Downloading Clang ${{ env.CLANG_VERSION }}..."
             sudo mkdir -p "$CLANG_DIR"
@@ -142,7 +122,6 @@ jobs:
             echo "Clang cached at $CLANG_DIR"
           fi
           
-          # ── GCC 4.9 (aarch64 + arm32) ──
           if [ ! -d "$GCC_DIR" ]; then
             echo "Downloading GCC 4.9..."
             sudo mkdir -p "$GCC_DIR"
@@ -156,18 +135,13 @@ jobs:
             echo "GCC cached at $GCC_DIR"
           fi
           
-          # 验证
           "$CLANG_DIR/bin/clang" --version
           "$GCC_DIR/bin/aarch64-linux-android-gcc" --version
           
-          # 供后续步骤使用
           echo "CLANG_DIR=$CLANG_DIR" >> $GITHUB_OUTPUT
           echo "GCC_DIR=$GCC_DIR" >> $GITHUB_OUTPUT
           echo "PATH=$CLANG_DIR/bin:$GCC_DIR/bin" >> $GITHUB_OUTPUT
 
-      # ═══════════════════════════════════
-      # 7️⃣ ccache 缓存
-      # ═══════════════════════════════════
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -184,9 +158,6 @@ jobs:
           export CCACHE_MAXSIZE=2G
           ccache -z
 
-      # ═══════════════════════════════════
-      # 8️⃣ 生成内核配置
-      # ═══════════════════════════════════
       - name: Prepare kernel config
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -201,19 +172,14 @@ jobs:
             done
           fi
           
-          # --- KernelSU 核心依赖 ---
           scripts/config --enable KSU
           scripts/config --enable KSU_DAEMON
           scripts/config --enable KPROBES
           scripts/config --enable KPROBE_EVENTS
-          
-          # --- 联发科 cpufreq/dvfsrc 必选 ---
           scripts/config --enable MTK_CPUFREQ
           scripts/config --enable MTK_DVFSRC
           scripts/config --enable CPU_FREQ_GOV_SCHEDUTIL
           scripts/config --enable SCHED_ALT
-          
-          # --- 关闭签名/调试/符号限制 ---
           scripts/config --disable MODULE_SIG
           scripts/config --disable MODULE_SIG_ALL
           scripts/config --disable MODULE_SIG_SHA256
@@ -233,9 +199,6 @@ jobs:
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MTK_CPUFREQ|CONFIG_MTK_DVFSRC|CONFIG_MODULE_SIG" out/.config || true
           cp out/.config ../artifact_config.txt 2>/dev/null || true
 
-      # ═══════════════════════════════════
-      # 9️⃣ 编译内核
-      # ═══════════════════════════════════
       - name: Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -284,9 +247,6 @@ jobs:
           
           echo "✅ Kernel Image built successfully"
 
-      # ═══════════════════════════════════
-      # 🔟 编译 DTB
-      # ═══════════════════════════════════
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -294,9 +254,6 @@ jobs:
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
-      # ═══════════════════════════════════
-      # 1️⃣1️⃣ 打包镜像
-      # ═══════════════════════════════════
       - name: Package kernel images
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -333,9 +290,6 @@ jobs:
             echo "✅ KSU module copied to artifacts"
           fi
 
-      # ═══════════════════════════════════
-      # 1️⃣2️⃣ AnyKernel3 ZIP
-      # ═══════════════════════════════════
       - name: Package AnyKernel3
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -369,9 +323,6 @@ jobs:
           zip -r9 ../artifact/AnyKernel3-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d-%H%M).zip * -x .git README.md *placeholder
           echo "✅ AnyKernel3 ZIP created"
 
-      # ═══════════════════════════════════
-      # 1️⃣3️⃣ Magisk 模块
-      # ═══════════════════════════════════
       - name: Package Magisk Module
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -416,9 +367,6 @@ jobs:
           zip -r9 ../artifact/Magisk-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d).zip .
           echo "✅ Magisk module ZIP created"
 
-      # ═══════════════════════════════════
-      # 1️⃣4️⃣ 上传产物
-      # ═══════════════════════════════════
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -430,9 +378,6 @@ jobs:
             ${{ env.KERNEL_DIR }}/patch.log
           retention-days: 30
 
-      # ═══════════════════════════════════
-      # 1️⃣5️⃣ 自动发布到 Releases
-      # ═══════════════════════════════════
       - name: Create Release
         if: github.event.inputs.build_type == 'release' && github.repository_owner == github.actor
         uses: softprops/action-gh-release@v1
