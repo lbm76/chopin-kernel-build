@@ -8,10 +8,6 @@ on:
         type: choice
         options: [release, debug]
         default: release
-      ksu_branch:
-        description: 'KSU 分支/标签 (留空=最新 main，或填 v0.9.5)'
-        required: false
-        default: ''
 
 env:
   KERNEL_DIR: kernel/xiaomi/chopin
@@ -19,7 +15,8 @@ env:
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
   CLANG_VERSION: r450784d
   GCC_VERSION: aarch64-linux-android-4.9
-  KSU_BRANCH: ${{ github.event.inputs.ksu_branch }}
+  # 写死 KernelSU 版本，避免 main 分支结构变动
+  KSU_VERSION: v0.9.5
   CCACHE_DIR: /tmp/ccache
   KBUILD_BUILD_USER: "builder"
   KBUILD_BUILD_HOST: "github-actions"
@@ -39,7 +36,7 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # 2️⃣ KernelSU 打补丁（绝对路径 + 自动找 setup.py）
+      # 2️⃣ KernelSU 打补丁（指定 v0.9.5，绝对路径）
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
@@ -48,20 +45,17 @@ jobs:
           KSU_DIR="${GITHUB_WORKSPACE}/KernelSU"
           KERNEL_SRC_DIR="${GITHUB_WORKSPACE}/${{ env.KERNEL_DIR }}"
           
-          if [ -n "${{ env.KSU_BRANCH }}" ]; then
-            git clone --depth=1 -b "${{ env.KSU_BRANCH }}" https://github.com/tiann/KernelSU.git "$KSU_DIR"
-          else
-            git clone --depth=1 https://github.com/tiann/KernelSU.git "$KSU_DIR"
-          fi
+          git clone --depth=1 -b "${{ env.KSU_VERSION }}" https://github.com/tiann/KernelSU.git "$KSU_DIR"
           KSU_VER=$(cd "$KSU_DIR" && git describe --tags --always --dirty 2>/dev/null || echo "unknown")
           echo "KernelSU version: $KSU_VER"
           echo "ksu_version=$KSU_VER" >> $GITHUB_OUTPUT
           
           cd "$KSU_DIR"
-          SETUP_PY=$(find . -name "setup.py" -type f | head -1)
-          if [ -z "$SETUP_PY" ]; then
-            echo "❌ KernelSU 仓库里找不到 setup.py"
-            find . -type f -name "*.py" | head -20
+          # v0.9.5 里 setup.py 在 kernel/setup.py
+          SETUP_PY="kernel/setup.py"
+          if [ ! -f "$SETUP_PY" ]; then
+            echo "❌ $SETUP_PY 不存在，列出 kernel 目录："
+            ls -la kernel/
             exit 1
           fi
           echo "Found setup.py at: $SETUP_PY"
@@ -351,7 +345,7 @@ jobs:
             **Build Env**
             - Ubuntu 22.04 + Clang 13.0.1 (r450784d) + GCC 4.9
             - Kernel: `lbm76/xinran_xiaomi_kernel_chopin@xinran` (4.14)
-            - KernelSU: `tiann/KernelSU@${{ steps.ksu.outputs.ksu_version || 'latest' }}`
+            - KernelSU: `tiann/KernelSU@v0.9.5`
             
             **Features**
             - KernelSU support (module or built-in)
