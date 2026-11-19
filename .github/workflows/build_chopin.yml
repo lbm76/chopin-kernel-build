@@ -1,4 +1,4 @@
-name: Build Chopin (MT6891) Kernel with KernelSU + OC/UV
+name: Build Chopin (MT6891) Kernel with KernelSU
 
 on:
   workflow_dispatch:
@@ -30,9 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
-      # ═══════════════════════════════════
-      # 1️⃣ Checkout 内核源码
-      # ═══════════════════════════════════
+      # 1️⃣ 拉官方内核源码（已写死，不用改）
       - name: Checkout kernel source (xinran branch)
         uses: actions/checkout@v4
         with:
@@ -41,92 +39,7 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # ═══════════════════════════════════
-      # 2️⃣ 自动定位 OPP 文件 → 生成补丁 → 应用（全内存完成，零文件落地）
-      # ═══════════════════════════════════
-      - name: Generate & Apply OC/UV patches on the fly
-        id: ocuv
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          set -euo pipefail
-          
-          echo "=== Searching for CPU OPP table file ==="
-          CPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "mt6891_cpu_opp_data" 2>/dev/null | head -1)
-          if [ -z "$CPU_FILE" ]; then
-            CPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "opp_data" 2>/dev/null | grep -iE "mt6891|mtk.*cpu.*opp" | head -1)
-          fi
-          if [ -z "$CPU_FILE" ]; then
-            echo "❌ 未找到 CPU OPP 文件"; exit 1
-          fi
-          echo "Found CPU: $CPU_FILE"
-          
-          echo "=== Searching for GPU OPP table file ==="
-          GPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "mt6891_gpu_opp_table" 2>/dev/null | head -1)
-          if [ -z "$GPU_FILE" ]; then
-            GPU_FILE=$(find . -type f -name "*.c" | xargs grep -l "gpu_opp_info" 2>/dev/null | grep -iE "mt6891|mtk.*gpu.*opp" | head -1)
-          fi
-          if [ -z "$GPU_FILE" ]; then
-            echo "❌ 未找到 GPU OPP 文件"; exit 1
-          fi
-          echo "Found GPU: $GPU_FILE"
-          
-          # 备份原文件
-          cp "$CPU_FILE" "${CPU_FILE}.orig"
-          cp "$GPU_FILE" "${GPU_FILE}.orig"
-          
-          # ════════════════════════════════
-          # 修改 CPU OPP 表：全频段 -75mV + 追加 2.8G/2.9G
-          # ════════════════════════════════
-          sed -i 's/{ 300000000,  750000 }/{ 300000000,  675000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 600000000,  750000 }/{ 600000000,  675000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 800000000,  775000 }/{ 800000000,  700000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 1000000000, 800000 }/{ 1000000000, 725000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 1200000000, 825000 }/{ 1200000000, 750000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 1400000000, 850000 }/{ 1400000000, 775000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 1600000000, 875000 }/{ 1600000000, 800000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 1800000000, 900000 }/{ 1800000000, 825000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 2000000000, 950000 }/{ 2000000000, 875000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 2200000000, 1000000 }/{ 2200000000, 925000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 2400000000, 1050000 }/{ 2400000000, 975000 }/' "${CPU_FILE}.orig"
-          sed -i 's/{ 2600000000, 1100000 }/{ 2600000000, 1025000 }/' "${CPU_FILE}.orig"
-          # 追加 2.8G / 2.9G（在最后一行前插入）
-          sed -i '/{ 2600000000, 1100000 }/a\       { 2800000000, 1075000 },\n       { 2900000000, 1100000 },' "${CPU_FILE}.orig"
-          
-          # ════════════════════════════════
-          # 修改 GPU OPP 表：降压 + 追加 800M/850M
-          # ════════════════════════════════
-          sed -i 's/{ 300000000,  600000 }/{ 300000000,  550000 }/' "${GPU_FILE}.orig"
-          sed -i 's/{ 400000000,  625000 }/{ 400000000,  575000 }/' "${GPU_FILE}.orig"
-          sed -i 's/{ 500000000,  650000 }/{ 500000000,  600000 }/' "${GPU_FILE}.orig"
-          sed -i 's/{ 600000000,  675000 }/{ 600000000,  625000 }/' "${GPU_FILE}.orig"
-          sed -i 's/{ 700000000,  700000 }/{ 700000000,  650000 }/' "${GPU_FILE}.orig"
-          sed -i '/{ 700000000,  700000 }/a\       { 800000000,  675000 },\n       { 850000000,  700000 },' "${GPU_FILE}.orig"
-          
-          # ════════════════════════════════
-          # 生成并应用标准 unified diff
-          # ════════════════════════════════
-          diff -u "$CPU_FILE" "${CPU_FILE}.orig" > cpu.patch || true
-          diff -u "$GPU_FILE" "${GPU_FILE}.orig" > gpu.patch || true
-          
-          if [ ! -s cpu.patch ] || [ ! -s gpu.patch ]; then
-            echo "❌ 补丁生成失败（可能原文件格式不匹配）"
-            echo "=== CPU patch ==="; cat cpu.patch
-            echo "=== GPU patch ==="; cat gpu.patch
-            exit 1
-          fi
-          
-          for p in cpu.patch gpu.patch; do
-            echo "Applying $p"
-            git apply --verbose "$p" 2>&1 | tee -a patch.log || {
-              echo "⚠️ git apply 失败，尝试 patch -p1"
-              patch -p1 < "$p" 2>&1 | tee -a patch.log
-            }
-          done
-          echo "✅ OC/UV patches applied"
-
-      # ═══════════════════════════════════
-      # 3️⃣ KernelSU 打补丁
-      # ═══════════════════════════════════
+      # 2️⃣ KernelSU 打补丁
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
@@ -144,9 +57,7 @@ jobs:
           cd "$KSU_DIR"
           python3 kernel/setup.py --kernel-dir="../${{ env.KERNEL_DIR }}" --auto 2>&1 | tee ksu_patch.log
 
-      # ═══════════════════════════════════
-      # 4️⃣ 安装编译依赖
-      # ═══════════════════════════════════
+      # 3️⃣ 安装编译依赖
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -158,9 +69,7 @@ jobs:
             git wget curl unzip xz-utils \
             libtinfo5 libstdc++6 libxml2-utils
 
-      # ═══════════════════════════════════
-      # 5️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
-      # ═══════════════════════════════════
+      # 4️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
       - name: Download & Cache Toolchains (Clang 13 + GCC 4.9)
         id: toolchain
         run: |
@@ -174,9 +83,6 @@ jobs:
             cd /tmp
             wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
             sudo tar -xzf clang.tar.gz -C "$CLANG_DIR"
-            echo "Clang extracted to $CLANG_DIR"
-          else
-            echo "Clang cached at $CLANG_DIR"
           fi
           
           if [ ! -d "$GCC_DIR" ]; then
@@ -187,9 +93,6 @@ jobs:
             wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz" -O gcc32.tar.gz
             sudo tar -xzf gcc64.tar.gz -C "$GCC_DIR"
             sudo tar -xzf gcc32.tar.gz -C "$GCC_DIR"
-            echo "GCC extracted to $GCC_DIR"
-          else
-            echo "GCC cached at $GCC_DIR"
           fi
           
           "$CLANG_DIR/bin/clang" --version
@@ -199,9 +102,7 @@ jobs:
           echo "GCC_DIR=$GCC_DIR" >> $GITHUB_OUTPUT
           echo "PATH=$CLANG_DIR/bin:$GCC_DIR/bin" >> $GITHUB_OUTPUT
 
-      # ═══════════════════════════════════
-      # 6️⃣ ccache 缓存
-      # ═══════════════════════════════════
+      # 5️⃣ ccache 缓存
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -218,9 +119,7 @@ jobs:
           export CCACHE_MAXSIZE=2G
           ccache -z
 
-      # ═══════════════════════════════════
-      # 7️⃣ 生成内核配置
-      # ═══════════════════════════════════
+      # 6️⃣ 生成内核配置（仅加 KernelSU 必需项）
       - name: Prepare kernel config
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -228,43 +127,24 @@ jobs:
           
           make O=out ARCH=arm64 ${DEFCONFIG}_defconfig
           
-          FRAGMENTS=$(find . -type f \( -name "*.config.fragment" -o -name "*.fragment" \) ! -path "./out/*" 2>/dev/null | head -30)
-          if [ -n "$FRAGMENTS" ]; then
-            for f in $FRAGMENTS; do
-              scripts/kconfig/merge_config.sh -m -O out .config "$f"
-            done
-          fi
-          
           scripts/config --enable KSU
           scripts/config --enable KSU_DAEMON
           scripts/config --enable KPROBES
           scripts/config --enable KPROBE_EVENTS
-          scripts/config --enable MTK_CPUFREQ
-          scripts/config --enable MTK_DVFSRC
-          scripts/config --enable CPU_FREQ_GOV_SCHEDUTIL
-          scripts/config --enable SCHED_ALT
           scripts/config --disable MODULE_SIG
           scripts/config --disable MODULE_SIG_ALL
           scripts/config --disable MODULE_SIG_SHA256
           scripts/config --disable DEBUG_INFO
           scripts/config --disable DEBUG_KERNEL
           scripts/config --disable KALLSYMS
-          scripts/config --disable UNUSED_SYMBOLS 2>/dev/null || true
-          scripts/config --disable TRIM_UNUSED_KSYMS 2>/dev/null || true
-          scripts/config --enable MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS 2>/dev/null || true
-          scripts/config --enable MODULE_FORCE_LOAD 2>/dev/null || true
-          scripts/config --enable MODULE_FORCE_UNLOAD 2>/dev/null || true
-          scripts/config --enable MODVERSIONS 2>/dev/null || true
           
           make O=out ARCH=arm64 olddefconfig
           
           echo "=== 关键配置校验 ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MTK_CPUFREQ|CONFIG_MTK_DVFSRC|CONFIG_MODULE_SIG" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULE_SIG" out/.config || true
           cp out/.config ../artifact_config.txt 2>/dev/null || true
 
-      # ═══════════════════════════════════
-      # 8️⃣ 编译内核
-      # ═══════════════════════════════════
+      # 7️⃣ 编译内核
       - name: Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -313,9 +193,7 @@ jobs:
           
           echo "✅ Kernel Image built successfully"
 
-      # ═══════════════════════════════════
-      # 9️⃣ 编译 DTB
-      # ═══════════════════════════════════
+      # 8️⃣ 编译 DTB
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
         env:
@@ -323,9 +201,7 @@ jobs:
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
-      # ═══════════════════════════════════
-      # 1️⃣1️⃣ 打包镜像
-      # ═══════════════════════════════════
+      # 9️⃣ 打包镜像
       - name: Package kernel images
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -362,9 +238,7 @@ jobs:
             echo "✅ KSU module copied to artifacts"
           fi
 
-      # ═══════════════════════════════════
-      # 1️⃣2️⃣ AnyKernel3 ZIP
-      # ═══════════════════════════════════
+      # 1️⃣0️⃣ AnyKernel3 ZIP
       - name: Package AnyKernel3
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -376,11 +250,10 @@ jobs:
           if [ -f artifact/ksu.ko ]; then
             mkdir -p AnyKernel3/modules
             cp artifact/ksu.ko AnyKernel3/modules/
-            echo "✅ KSU module added to AnyKernel3"
           fi
           
           cd AnyKernel3
-          sed -i "s/kernel.string=.*/kernel.string=Xinran+KSU+OC-UV Kernel for Chopin (MT6891)/" anykernel.sh
+          sed -i "s/kernel.string=.*/kernel.string=Xinran+KSU Kernel for Chopin (MT6891)/" anykernel.sh
           sed -i "s/do.devicecheck=1/do.devicecheck=0/" anykernel.sh
           sed -i "s/do.modules=0/do.modules=1/" anykernel.sh
           sed -i "s/do.cleanup=1/do.cleanup=1/" anykernel.sh
@@ -395,12 +268,10 @@ jobs:
             fi' anykernel.sh
           fi
           
-          zip -r9 ../artifact/AnyKernel3-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d-%H%M).zip * -x .git README.md *placeholder
+          zip -r9 ../artifact/AnyKernel3-Xinran-KSU-Chopin-$(date +%Y%m%d-%H%M).zip * -x .git README.md *placeholder
           echo "✅ AnyKernel3 ZIP created"
 
-      # ═══════════════════════════════════
-      # 1️⃣3️⃣ Magisk 模块
-      # ═══════════════════════════════════
+      # 1️⃣1️⃣ Magisk 模块
       - name: Package Magisk Module
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -415,12 +286,12 @@ jobs:
           fi
           
           cat > magisk_module/module.prop << MAGEOF
-          id=xinran_ksu_ocuv_kernel_chopin
-          name=Xinran Kernel + KSU + OC/UV (Chopin MT6891)
+          id=xinran_ksu_kernel_chopin
+          name=Xinran Kernel + KSU (Chopin MT6891)
           version=$(date +%Y%m%d)
           versionCode=$(date +%s)
           author=lbm76/Xinran + tiann/KernelSU
-          description=Dimensity 1100 kernel with KernelSU, CPU 2.9GHz, GPU 850MHz, UV 75mV
+          description=Dimensity 1100 kernel with KernelSU (stock frequencies/voltages)
           minMagisk=23000
           MAGEOF
           
@@ -432,7 +303,7 @@ jobs:
           LATESTARTSERVICE=false
           
           on_install() {
-            ui_print "- Installing Xinran Kernel + KSU + OC/UV for Chopin..."
+            ui_print "- Installing Xinran Kernel + KSU for Chopin..."
             ui_print "- Flashing boot image..."
             if [ -f $MODPATH/modules/ksu.ko ]; then
               ui_print "- Installing KernelSU module..."
@@ -442,32 +313,27 @@ jobs:
           SHOEF
           
           cd magisk_module
-          zip -r9 ../artifact/Magisk-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d).zip .
+          zip -r9 ../artifact/Magisk-Xinran-KSU-Chopin-$(date +%Y%m%d).zip .
           echo "✅ Magisk module ZIP created"
 
-      # ═══════════════════════════════════
-      # 1️⃣4️⃣ 上传产物
-      # ═══════════════════════════════════
+      # 1️⃣2️⃣ 上传产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: xinran-ksu-ocuv-chopin-${{ env.BUILD_TYPE }}-${{ github.run_number }}
+          name: xinran-ksu-chopin-${{ env.BUILD_TYPE }}-${{ github.run_number }}
           path: |
             artifact/
             ${{ env.KERNEL_DIR }}/build.log
             ${{ env.KERNEL_DIR }}/../KernelSU/ksu_patch.log
-            ${{ env.KERNEL_DIR }}/patch.log
           retention-days: 30
 
-      # ═══════════════════════════════════
-      # 1️⃣5️⃣ 自动发布到 Releases
-      # ═══════════════════════════════════
+      # 1️⃣3️⃣ 自动发布到 Releases
       - name: Create Release
         if: github.event.inputs.build_type == 'release' && github.repository_owner == github.actor
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: xinran-ksu-ocuv-chopin-${{ github.run_number }}
-          name: "Xinran+KSU+OC/UV Chopin (MT6891) #${{ github.run_number }}"
+          tag_name: xinran-ksu-chopin-${{ github.run_number }}
+          name: "Xinran+KSU Chopin (MT6891) #${{ github.run_number }}"
           body: |
             **Redmi Note 10 Pro (chopin) - Dimensity 1100 (MT6891)**
             
@@ -476,15 +342,14 @@ jobs:
             - Kernel: `lbm76/xinran_xiaomi_kernel_chopin@xinran` (4.14)
             - KernelSU: `tiann/KernelSU@${{ steps.ksu.outputs.ksu_version || 'latest' }}`
             
-            **OC/UV Applied (auto-generated at build time)**
-            - **CPU**: 2.6GHz → **2.9 GHz**, 全频段 **-75mV**
-            - **GPU**: 700MHz → **850 MHz**, 降压
-            - **Configs**: `CONFIG_MTK_CPUFREQ=y`, `CONFIG_MTK_DVFSRC=y`
+            **Features**
+            - KernelSU support (module or built-in)
+            - Stock frequencies & voltages (no OC/UV)
             
             **Artifacts**
-            - `AnyKernel3-Xinran-KSU-OCUV-Chopin-*.zip` → **Recovery 刷入**
-            - `Magisk-Xinran-KSU-OCUV-Chopin-*.zip` → Magisk 模块
-            - `ksu.ko` + `config_final` + `build.log` + `patch.log`
+            - `AnyKernel3-Xinran-KSU-Chopin-*.zip` → **Recovery 刷入**
+            - `Magisk-Xinran-KSU-Chopin-*.zip` → Magisk 模块
+            - `ksu.ko` + `config_final` + `build.log`
           files: artifact/*
           draft: false
           prerelease: false
