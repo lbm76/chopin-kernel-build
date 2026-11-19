@@ -42,12 +42,16 @@ jobs:
           submodules: recursive
 
       # ═══════════════════════════════════
-      # 2️⃣ Checkout 编译仓库（取 patches 文件夹）
+      # 2️⃣ Checkout 补丁仓库 (lbm76/chopin-kernel-build) — 只拉 patches/
       # ═══════════════════════════════════
-      - name: Checkout build repo (for patches)
+      - name: Checkout patches repo (lbm76/chopin-kernel-build)
         uses: actions/checkout@v4
         with:
+          repository: lbm76/chopin-kernel-build
+          ref: main
           path: build-repo
+          sparse-checkout: patches
+          sparse-checkout-cone-mode: false
 
       # ═══════════════════════════════════
       # 3️⃣ 应用 MT6891 OC/UV 补丁
@@ -66,7 +70,7 @@ jobs:
               }
             done
           else
-            echo "❌ patches 目录不存在，请在编译仓库根目录建 patches/ 并放入 .patch 文件"
+            echo "❌ patches 目录不存在于 build-repo/patches"
             exit 1
           fi
 
