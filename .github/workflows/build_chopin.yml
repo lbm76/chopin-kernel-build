@@ -48,7 +48,7 @@ jobs:
           echo "ksu_version=${{ env.KSU_VERSION }}" >> $GITHUB_OUTPUT
           echo "✅ KernelSU patched"
 
-      # 3️⃣ 应用 susfs4ksu 补丁
+      # 3️⃣ 应用 susfs4ksu 补丁（多重兜底下载，彻底解决 gzip 报错）
       - name: Apply susfs4ksu patches
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -58,14 +58,43 @@ jobs:
           SUFS_TMP=$(mktemp -d)
           cd "$SUFS_TMP"
           
-          curl -LSs "https://github.com/sidex15/susfs4ksu/archive/refs/tags/${{ env.SUFS_VERSION }}.tar.gz" | tar -xz
+          # 尝试 1：通过 GitHub API 获取 Release 资产下载链接
+          ASSET_URL=$(curl -sL "https://api.github.com/repos/sidex15/susfs4ksu/releases/tags/${{ env.SUFS_VERSION }}" \
+            | grep -E '"browser_download_url":\s*"[^"]*\.tar\.gz"' \
+            | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           
+          if [ -n "$ASSET_URL" ]; then
+            echo "Downloading from Release asset: $ASSET_URL"
+            curl -LSs "$ASSET_URL" | tar -xz
+          else
+            # 尝试 2：直接下载源码归档（tag 名可能不带 v）
+            TAG_NO_V="${{ env.SUFS_VERSION }}"; TAG_NO_V="${TAG_NO_V#v}"
+            ARCHIVE_URL="https://github.com/sidex15/susfs4ksu/archive/refs/tags/${{ env.SUFS_VERSION }}.tar.gz"
+            echo "Trying archive URL: $ARCHIVE_URL"
+            if curl -LSsf "$ARCHIVE_URL" | tar -xz; then
+              echo "Downloaded via archive URL"
+            else
+              # 尝试 3：main 分支源码
+              echo "Falling back to main branch..."
+              curl -LSs "https://github.com/sidex15/susfs4ksu/archive/refs/heads/main.tar.gz" | tar -xz
+            fi
+          fi
+          
+          # 找补丁目录（兼容多种目录名）
           if [ -d "susfs4ksu-${{ env.SUFS_VERSION }}/kernel_patches" ]; then
             PATCH_DIR="susfs4ksu-${{ env.SUFS_VERSION }}/kernel_patches"
+          elif [ -d "susfs4ksu-${TAG_NO_V}/kernel_patches" ]; then
+            PATCH_DIR="susfs4ksu-${TAG_NO_V}/kernel_patches"
+          elif [ -d "susfs4ksu-main/kernel_patches" ]; then
+            PATCH_DIR="susfs4ksu-main/kernel_patches"
           elif [ -d "susfs4ksu-${{ env.SUFS_VERSION }}/patches" ]; then
             PATCH_DIR="susfs4ksu-${{ env.SUFS_VERSION }}/patches"
+          elif [ -d "susfs4ksu-${TAG_NO_V}/patches" ]; then
+            PATCH_DIR="susfs4ksu-${TAG_NO_V}/patches"
+          elif [ -d "susfs4ksu-main/patches" ]; then
+            PATCH_DIR="susfs4ksu-main/patches"
           else
-            echo "❌ 找不到补丁目录"
+            echo "❌ 找不到补丁目录，列出所有文件："
             find . -name "*.patch" -type f
             exit 1
           fi
