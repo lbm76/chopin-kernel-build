@@ -17,7 +17,7 @@ env:
   KERNEL_DIR: kernel/xiaomi/chopin
   DEFCONFIG: chopin_user
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
-  CLANG_VERSION: r450784d          # Clang 13.0.1
+  CLANG_VERSION: r450784d
   GCC_VERSION: aarch64-linux-android-4.9
   KSU_BRANCH: ${{ github.event.inputs.ksu_branch }}
   CCACHE_DIR: /tmp/ccache
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
-      # 1️⃣ 拉官方内核源码（已写死，不用改）
+      # 1️⃣ 拉官方内核源码
       - name: Checkout kernel source (xinran branch)
         uses: actions/checkout@v4
         with:
@@ -39,13 +39,15 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # 2️⃣ KernelSU 打补丁（修复路径：--kernel-dir=".."）
+      # 2️⃣ KernelSU 打补丁（绝对路径 + 自动找 setup.py）
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           set -euo pipefail
-          KSU_DIR="../KernelSU"
+          KSU_DIR="${GITHUB_WORKSPACE}/KernelSU"
+          KERNEL_SRC_DIR="${GITHUB_WORKSPACE}/${{ env.KERNEL_DIR }}"
+          
           if [ -n "${{ env.KSU_BRANCH }}" ]; then
             git clone --depth=1 -b "${{ env.KSU_BRANCH }}" https://github.com/tiann/KernelSU.git "$KSU_DIR"
           else
@@ -56,8 +58,15 @@ jobs:
           echo "ksu_version=$KSU_VER" >> $GITHUB_OUTPUT
           
           cd "$KSU_DIR"
-          ls -la kernel/setup.py   # 确认文件存在
-          python3 kernel/setup.py --kernel-dir=".." --auto 2>&1 | tee ksu_patch.log
+          SETUP_PY=$(find . -name "setup.py" -type f | head -1)
+          if [ -z "$SETUP_PY" ]; then
+            echo "❌ KernelSU 仓库里找不到 setup.py"
+            find . -type f -name "*.py" | head -20
+            exit 1
+          fi
+          echo "Found setup.py at: $SETUP_PY"
+          
+          python3 "$SETUP_PY" --kernel-dir="$KERNEL_SRC_DIR" --auto 2>&1 | tee ksu_patch.log
 
       # 3️⃣ 安装编译依赖
       - name: Install dependencies
@@ -71,7 +80,7 @@ jobs:
             git wget curl unzip xz-utils \
             libtinfo5 libstdc++6 libxml2-utils
 
-      # 4️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
+      # 4️⃣ 下载工具链 (Clang 13 + GCC 4.9)
       - name: Download & Cache Toolchains (Clang 13 + GCC 4.9)
         id: toolchain
         run: |
@@ -121,7 +130,7 @@ jobs:
           export CCACHE_MAXSIZE=2G
           ccache -z
 
-      # 6️⃣ 生成内核配置（仅加 KernelSU 必需项）
+      # 6️⃣ 生成内核配置
       - name: Prepare kernel config
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
