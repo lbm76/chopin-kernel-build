@@ -35,29 +35,19 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           submodules: recursive
 
-      # 2️⃣ KernelSU 打补丁（v0.9.5 用 setup.sh，绝对路径）
+      # 2️⃣ KernelSU 打补丁（curl 直接跑官方 setup.sh，零 git clone）
       - name: Fetch & Patch KernelSU
         id: ksu
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           set -euo pipefail
-          KSU_DIR="${GITHUB_WORKSPACE}/KernelSU"
           KERNEL_SRC_DIR="${GITHUB_WORKSPACE}/${{ env.KERNEL_DIR }}"
           
-          git clone --depth=1 -b "${{ env.KSU_VERSION }}" https://github.com/tiann/KernelSU.git "$KSU_DIR"
-          KSU_VER=$(cd "$KSU_DIR" && git describe --tags --always --dirty 2>/dev/null || echo "unknown")
-          echo "KernelSU version: $KSU_VER"
-          echo "ksu_version=$KSU_VER" >> $GITHUB_OUTPUT
+          echo "Fetching KernelSU setup.sh (${{ env.KSU_VERSION }}) ..."
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ env.KSU_VERSION }}" "$KERNEL_SRC_DIR" 2>&1 | tee ksu_patch.log
           
-          cd "$KSU_DIR"
-          if [ ! -f "setup.sh" ]; then
-            echo "❌ setup.sh 不存在"
-            ls -la
-            exit 1
-          fi
-          chmod +x setup.sh
-          echo "Running setup.sh for kernel at: $KERNEL_SRC_DIR"
-          ./setup.sh "$KERNEL_SRC_DIR" 2>&1 | tee ksu_patch.log
+          echo "ksu_version=${{ env.KSU_VERSION }}" >> $GITHUB_OUTPUT
+          echo "✅ KernelSU patched"
 
       # 3️⃣ 安装编译依赖
       - name: Install dependencies
@@ -326,7 +316,7 @@ jobs:
           path: |
             artifact/
             ${{ env.KERNEL_DIR }}/build.log
-            ${{ env.KERNEL_DIR }}/../KernelSU/ksu_patch.log
+            ${{ env.KERNEL_DIR }}/ksu_patch.log
           retention-days: 30
 
       # 1️⃣3️⃣ 自动发布到 Releases
