@@ -17,7 +17,7 @@ env:
   KERNEL_DIR: kernel/xiaomi/chopin
   DEFCONFIG: chopin_user
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
-  CLANG_VERSION: r450784d      # Clang 13.0.1
+  CLANG_VERSION: r450784d          # Clang 13.0.1
   GCC_VERSION: aarch64-linux-android-4.9
   KSU_BRANCH: ${{ github.event.inputs.ksu_branch }}
   CCACHE_DIR: /tmp/ccache
@@ -42,7 +42,7 @@ jobs:
           submodules: recursive
 
       # ═══════════════════════════════════
-      # 2️⃣ Checkout 你的编译仓库（取 patches 文件夹）
+      # 2️⃣ Checkout 编译仓库（取 patches 文件夹）
       # ═══════════════════════════════════
       - name: Checkout build repo (for patches)
         uses: actions/checkout@v4
@@ -91,7 +91,7 @@ jobs:
           python3 kernel/setup.py --kernel-dir="../${{ env.KERNEL_DIR }}" --auto 2>&1 | tee ksu_patch.log
 
       # ═══════════════════════════════════
-      # 5️⃣ 安装依赖
+      # 5️⃣ 安装编译依赖
       # ═══════════════════════════════════
       - name: Install dependencies
         run: |
@@ -105,30 +105,53 @@ jobs:
             libtinfo5 libstdc++6 libxml2-utils
 
       # ═══════════════════════════════════
-      # 6️⃣ 工具链
+      # 6️⃣ 下载工具链 (Clang 13 + GCC 4.9) — 无第三方 Action
       # ═══════════════════════════════════
-      - name: Setup Clang 13.0.1
-        id: clang
-        uses: android-actions/setup-android-toolchain@v1
-        with:
-          ndk-version: r25c
-          clang-version: ${{ env.CLANG_VERSION }}
-          cache-key: clang-${{ env.CLANG_VERSION }}
-
-      - name: Setup GCC 4.9
-        id: gcc
+      - name: Download & Cache Toolchains (Clang 13 + GCC 4.9)
+        id: toolchain
         run: |
+          set -euo pipefail
+          CLANG_DIR="/opt/clang-${{ env.CLANG_VERSION }}"
           GCC_DIR="/opt/gcc-${{ env.GCC_VERSION }}"
+          
+          # ── Clang r450784d (13.0.1) ──
+          if [ ! -d "$CLANG_DIR" ]; then
+            echo "Downloading Clang ${{ env.CLANG_VERSION }}..."
+            sudo mkdir -p "$CLANG_DIR"
+            cd /tmp
+            wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
+            sudo tar -xzf clang.tar.gz -C "$CLANG_DIR"
+            echo "Clang extracted to $CLANG_DIR"
+          else
+            echo "Clang cached at $CLANG_DIR"
+          fi
+          
+          # ── GCC 4.9 (aarch64 + arm32) ──
           if [ ! -d "$GCC_DIR" ]; then
+            echo "Downloading GCC 4.9..."
             sudo mkdir -p "$GCC_DIR"
             cd /tmp
             wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz" -O gcc64.tar.gz
             wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz" -O gcc32.tar.gz
             sudo tar -xzf gcc64.tar.gz -C "$GCC_DIR"
             sudo tar -xzf gcc32.tar.gz -C "$GCC_DIR"
+            echo "GCC extracted to $GCC_DIR"
+          else
+            echo "GCC cached at $GCC_DIR"
           fi
+          
+          # 验证
+          "$CLANG_DIR/bin/clang" --version
+          "$GCC_DIR/bin/aarch64-linux-android-gcc" --version
+          
+          # 供后续步骤使用
+          echo "CLANG_DIR=$CLANG_DIR" >> $GITHUB_OUTPUT
           echo "GCC_DIR=$GCC_DIR" >> $GITHUB_OUTPUT
+          echo "PATH=$CLANG_DIR/bin:$GCC_DIR/bin" >> $GITHUB_OUTPUT
 
+      # ═══════════════════════════════════
+      # 7️⃣ ccache 缓存
+      # ═══════════════════════════════════
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -146,12 +169,12 @@ jobs:
           ccache -z
 
       # ═══════════════════════════════════
-      # 7️⃣ 生成配置
+      # 8️⃣ 生成内核配置
       # ═══════════════════════════════════
       - name: Prepare kernel config
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          export PATH="${{ steps.clang.outputs.path }}:${{ steps.gcc.outputs.GCC_DIR }}/bin:$PATH"
+          export PATH="${{ steps.toolchain.outputs.PATH }}:$PATH"
           
           make O=out ARCH=arm64 ${DEFCONFIG}_defconfig
           
@@ -162,7 +185,7 @@ jobs:
             done
           fi
           
-          # --- KernelSU ---
+          # --- KernelSU 核心依赖 ---
           scripts/config --enable KSU
           scripts/config --enable KSU_DAEMON
           scripts/config --enable KPROBES
@@ -174,7 +197,7 @@ jobs:
           scripts/config --enable CPU_FREQ_GOV_SCHEDUTIL
           scripts/config --enable SCHED_ALT
           
-          # --- 关闭签名/调试 ---
+          # --- 关闭签名/调试/符号限制 ---
           scripts/config --disable MODULE_SIG
           scripts/config --disable MODULE_SIG_ALL
           scripts/config --disable MODULE_SIG_SHA256
@@ -185,6 +208,7 @@ jobs:
           scripts/config --disable TRIM_UNUSED_KSYMS 2>/dev/null || true
           scripts/config --enable MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS 2>/dev/null || true
           scripts/config --enable MODULE_FORCE_LOAD 2>/dev/null || true
+          scripts/config --enable MODULE_FORCE_UNLOAD 2>/dev/null || true
           scripts/config --enable MODVERSIONS 2>/dev/null || true
           
           make O=out ARCH=arm64 olddefconfig
@@ -194,12 +218,12 @@ jobs:
           cp out/.config ../artifact_config.txt 2>/dev/null || true
 
       # ═══════════════════════════════════
-      # 8️⃣ 编译内核
+      # 9️⃣ 编译内核
       # ═══════════════════════════════════
       - name: Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         env:
-          PATH: ${{ steps.clang.outputs.path }}:${{ steps.gcc.outputs.GCC_DIR }}/bin:$PATH
+          PATH: ${{ steps.toolchain.outputs.PATH }}:$PATH
           CC: clang
           CLANG_TRIPLE: aarch64-linux-gnu-
           CROSS_COMPILE: aarch64-linux-android-
@@ -237,24 +261,31 @@ jobs:
             echo "✅ KSU module (ksu.ko) built"
           elif [ -f out/drivers/kernel/ksu/ksu.o ]; then
             echo "✅ KSU built-in"
+          else
+            echo "⚠️ KSU object not found"
+            find out -name "*ksu*" -type f 2>/dev/null | head -10
           fi
           
           echo "✅ Kernel Image built successfully"
 
       # ═══════════════════════════════════
-      # 9️⃣ DTB & 打包
+      # 🔟 编译 DTB
       # ═══════════════════════════════════
       - name: Build DTB
         working-directory: ${{ env.KERNEL_DIR }}
         env:
-          PATH: ${{ steps.clang.outputs.path }}:${{ steps.gcc.outputs.GCC_DIR }}/bin:$PATH
+          PATH: ${{ steps.toolchain.outputs.PATH }}:$PATH
         run: |
           make O=out ARCH=arm64 dtbs -j$(nproc --all) 2>&1 | tee -a build.log
 
+      # ═══════════════════════════════════
+      # 1️⃣1️⃣ 打包镜像
+      # ═══════════════════════════════════
       - name: Package kernel images
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           cd out/arch/arm64/boot
+          
           gzip -c -9 Image > Image.gz
           lz4 -c -l -9 Image > Image.lz4
           
@@ -267,9 +298,11 @@ jobs:
           done
           
           if [ -n "$DTB_FILES" ]; then
+            echo "Found DTBs: $DTB_FILES"
             cat Image.gz $DTB_FILES > Image.gz-dtb
             cat Image.lz4 $DTB_FILES > Image.lz4-dtb
           else
+            echo "⚠️ No DTB found"
             cp Image.gz Image.gz-dtb
             cp Image.lz4 Image.lz4-dtb
           fi
@@ -281,8 +314,12 @@ jobs:
           
           if [ -f ../drivers/kernel/ksu/ksu.ko ]; then
             cp ../drivers/kernel/ksu/ksu.ko ../../../../artifact/
+            echo "✅ KSU module copied to artifacts"
           fi
 
+      # ═══════════════════════════════════
+      # 1️⃣2️⃣ AnyKernel3 ZIP
+      # ═══════════════════════════════════
       - name: Package AnyKernel3
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -290,25 +327,35 @@ jobs:
           cd ../../../
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp artifact/Image.gz-dtb AnyKernel3/
+          
           if [ -f artifact/ksu.ko ]; then
             mkdir -p AnyKernel3/modules
             cp artifact/ksu.ko AnyKernel3/modules/
+            echo "✅ KSU module added to AnyKernel3"
           fi
+          
           cd AnyKernel3
           sed -i "s/kernel.string=.*/kernel.string=Xinran+KSU+OC-UV Kernel for Chopin (MT6891)/" anykernel.sh
           sed -i "s/do.devicecheck=1/do.devicecheck=0/" anykernel.sh
           sed -i "s/do.modules=0/do.modules=1/" anykernel.sh
           sed -i "s/do.cleanup=1/do.cleanup=1/" anykernel.sh
           sed -i "s/do.cleanuponabort=0/do.cleanuponabort=1/" anykernel.sh
+          
           if [ -f modules/ksu.ko ]; then
             sed -i '/^# end properties/a\
+            # KernelSU module installation\
             if [ -f $MODPATH/modules/ksu.ko ]; then\
               ui_print "- Installing KernelSU module..."\
               insmod $MODPATH/modules/ksu.ko\
             fi' anykernel.sh
           fi
+          
           zip -r9 ../artifact/AnyKernel3-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d-%H%M).zip * -x .git README.md *placeholder
+          echo "✅ AnyKernel3 ZIP created"
 
+      # ═══════════════════════════════════
+      # 1️⃣3️⃣ Magisk 模块
+      # ═══════════════════════════════════
       - name: Package Magisk Module
         if: github.event.inputs.build_type == 'release'
         working-directory: ${{ env.KERNEL_DIR }}
@@ -316,10 +363,12 @@ jobs:
           cd ../../../
           mkdir -p magisk_module/kernel
           cp artifact/Image.gz-dtb magisk_module/kernel/
+          
           if [ -f artifact/ksu.ko ]; then
             mkdir -p magisk_module/modules
             cp artifact/ksu.ko magisk_module/modules/
           fi
+          
           cat > magisk_module/module.prop << MAGEOF
           id=xinran_ksu_ocuv_kernel_chopin
           name=Xinran Kernel + KSU + OC/UV (Chopin MT6891)
@@ -329,20 +378,31 @@ jobs:
           description=Dimensity 1100 kernel with KernelSU, CPU 2.9GHz, GPU 850MHz, UV 75mV
           minMagisk=23000
           MAGEOF
+          
           cat > magisk_module/customize.sh << 'SHOEF'
           #!/bin/sh
-          SKIPMOUNT=false; PROPFILE=false; POSTFSDATA=true; LATESTARTSERVICE=false
+          SKIPMOUNT=false
+          PROPFILE=false
+          POSTFSDATA=true
+          LATESTARTSERVICE=false
+          
           on_install() {
             ui_print "- Installing Xinran Kernel + KSU + OC/UV for Chopin..."
+            ui_print "- Flashing boot image..."
             if [ -f $MODPATH/modules/ksu.ko ]; then
               ui_print "- Installing KernelSU module..."
             fi
-            ui_print "- Done! Reboot."
+            ui_print "- Done! Reboot to take effect."
           }
           SHOEF
+          
           cd magisk_module
           zip -r9 ../artifact/Magisk-Xinran-KSU-OCUV-Chopin-$(date +%Y%m%d).zip .
+          echo "✅ Magisk module ZIP created"
 
+      # ═══════════════════════════════════
+      # 1️⃣4️⃣ 上传产物
+      # ═══════════════════════════════════
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -354,6 +414,9 @@ jobs:
             ${{ env.KERNEL_DIR }}/patch.log
           retention-days: 30
 
+      # ═══════════════════════════════════
+      # 1️⃣5️⃣ 自动发布到 Releases
+      # ═══════════════════════════════════
       - name: Create Release
         if: github.event.inputs.build_type == 'release' && github.repository_owner == github.actor
         uses: softprops/action-gh-release@v1
@@ -378,5 +441,7 @@ jobs:
             - `Magisk-Xinran-KSU-OCUV-Chopin-*.zip` → Magisk 模块
             - `ksu.ko` + `config_final` + `build.log` + `patch.log`
           files: artifact/*
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
